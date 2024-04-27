@@ -1,0 +1,10 @@
+name: parsons-iac-demo
+runtime:
+  name: python
+  options:
+    virtualenv: venv
+description: Pulumi demo for Parsons IaC Panel 20240502
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: ""
