@@ -1,6 +1,8 @@
 import pulumi 
 import pulumi_aws as aws
 import pulumi_awsx as awsx
+import pulumi_docker as docker
+import base64
 
 # Create an AWS resource (S3 Bucket)
 bucket = aws.s3.Bucket("parsons")
@@ -12,10 +14,51 @@ ecr_repo = aws.ecr.Repository("ecr_repo",
     image_scanning_configuration=aws.ecr.RepositoryImageScanningConfigurationArgs(
         scan_on_push=True,
     ))
-image_resource = awsx.ecr.Image("image_resource",
-    repository_url=ecr_repo.url,
-    builder_version=awsx.ecr.BuilderVersion.BUILDER_V1,
-    context="../app")
+# Get registry info (creds and endpoint).
+auth_token = aws.ecr.get_authorization_token_output(registry_id=ecr_repo.registry_id)
+# print(auth_token)
+
+image_resource = docker.Image("image_resource",
+    build=docker.DockerBuildArgs(
+        args={
+            "BUILDKIT_INLINE_CACHE": "1",
+        },
+        cache_from=docker.CacheFromArgs(
+            images=[ecr_repo.repository_url.apply(lambda repository_url: f"{repository_url}:latest")],
+        ),
+        context="../app/",
+        dockerfile="../app/Dockerfile",
+    ),
+    image_name=ecr_repo.repository_url.apply(lambda repository_url: f"{repository_url}:latest"),
+    registry=docker.RegistryArgs(
+        username=pulumi.Output.secret(auth_token.user_name),
+        password=pulumi.Output.secret(auth_token.password),
+        server=ecr_repo.repository_url,
+    ))
+print(ecr_repo.registry_id)
+# image_resource = docker.RegistryImage('ecr_image',
+#     image_name=ecr_repo.repository_url,
+#     build=docker.RemoteImageBuildArgs(context='../app/', dockerfile="../app/Dockerfile"),
+#     registry=docker.ImageRegistry(
+#         server=ecr_repo.repository_url,
+#         username=ecr_creds.apply(lambda creds: creds.user_name),
+#         password=ecr_creds.apply(lambda creds: creds.password)
+#     )
+# )
+# image_resource = awsx.ecr.Image("imageResource",
+#     repository_url="string",
+#     args={
+#        "BUILDKIT_INLINE_CACHE": "1",
+#     },
+#     builder_version=awsx.ecr.BuilderVersion.BUILDER_V1,
+#     # cache_from=docker.CacheFromArgs(
+#     #     images=[ecr_repo.repository_url.apply(lambda repository_url: f"{repository_url}:latest")],),
+#     context="../app/",
+#     dockerfile="../app/Dockerfile",
+#     image_name=ecr_repo.repository_url.apply(lambda repository_url: f"{repository_url}:latest"),
+#     platform="linux/amd64",
+#     registry_id=ecr_repo.registry_id)
+
 
 # create IAM role
 assume_role = aws.iam.get_policy_document(statements=[aws.iam.GetPolicyDocumentStatementArgs(
@@ -42,11 +85,12 @@ lambda_policy_policy = aws.iam.Policy("policy",
     policy=lambda_policy.json)
 lambda_attach = aws.iam.RolePolicyAttachment("lambda-attach",
                                            role=lambda_role.name,
-                                           policy_arn=lambda_policy.arn)
-lambda_fn = aws.lambda_.Function("parsons-lambda", 
+                                           policy_arn=lambda_policy_policy.arn)
+lambda_fn = aws.lambda_.Function("parsons-lambda-no-s3", 
                                  role=lambda_role.arn,
-                                 image_uri=image_resource.uri,
-                                 handler="main.handler")
+                                 image_uri=pulumi.Output.concat(ecr_repo.repository_url, ":latest"),
+                                 package_type="Image",
+                                 timeout=900)
 # add api gateway
 ##
 ## API Gateway REST API (API Gateway V1 / original)
